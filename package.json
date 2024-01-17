@@ -1,0 +1,28 @@
+{
+  "name": "locklift-project",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "test": "npx locklift test --network local"
+  },
+  "author": "",
+  "license": "ISC",
+  "overrides": {
+    "nekoton-wasm": "npm:nekoton-wasm-locklift@1.20.2"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.3.11",
+    "@types/mocha": "^10.0.6",
+    "@types/node": "^20.10.0",
+    "chai": "^4.3.10",
+    "dotenv": "^16.0.3",
+    "locklift": "^2.9.2",
+    "prettier": "^3.1.0",
+    "ts-mocha": "^10.0.0",
+    "typescript": "^4.7.4"
+  },
+  "dependencies": {
+    "@broxus/tip3": "^1.0.2",
+    "@broxus/tip4": "^1.0.1"
+  }
+}

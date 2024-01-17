@@ -1,0 +1,202 @@
+pragma ever-solidity >= 0.61.2;
+pragma AbiHeader expire;
+pragma AbiHeader time;
+pragma AbiHeader pubkey;
+
+import "@broxus/tip3/contracts/interfaces/IAcceptTokensTransferCallback.tsol";
+import "@broxus/tip3/contracts/interfaces/ITokenRoot.tsol";
+import "@broxus/tip3/contracts/interfaces/ITokenWallet.tsol";
+import "@broxus/tip4/contracts/TIP4_1/interfaces/INftTransfer.tsol";
+import "@broxus/tip4/contracts/TIP4_1/interfaces/ITIP4_1NFT.tsol";
+
+
+// // This interface for transferring NFT to winner
+// import "@broxus/tip4/contracts/TIP4_1/interfaces/ITIP4_1NFT.tsol";
+// // This interface to accept NFT from owner
+// import "@broxus/tip4/contracts/TIP4_1/interfaces/INftTransfer.tsol";
+
+contract Staking is IAcceptTokensTransferCallback, INftTransfer {
+    uint16  static _nonce; // some random value to affect on contract address
+    address static _owner; // tokensale owner. will receive all transfers
+    address public adminWallet;
+    uint128 public constant BASE_APY = 50;
+    uint128 public constant SECONDS_IN_YEAR = 31536000;
+
+    address public _stakingTokenRoot;
+    address public _stakingTokenWallet;
+    address public _stakingNFTRoot;
+
+    address public forTest;
+    struct Stake {
+        uint128 amount;
+        uint128 timestamp;
+        address[] nfts;
+        uint128 claimedAmount;
+        uint128 firstStakedTime;
+    }
+    mapping(address => Stake) public stakes;
+    uint128 public totalStakedAmount;
+    uint128 public totalStakedNftCount;
+
+    mapping(address => address) public NftToStaker;
+    event TokenStake(address indexed staker, uint128 amount, uint128 time);
+    event TokenClaim(address indexed staker, uint128 amount, uint128 time);
+    event TokenUnstake(address indexed unstaker, uint128 amount, uint128 time);
+    event TokenWithdraw(address indexed admin, uint128 amount, uint128 time);
+
+    event NftStake(address indexed staker, address nft, uint128 time);
+    event NftUnstake(address indexed unstaker, address nft, uint128 time);
+
+
+    address public nftSender;
+    constructor(
+        address stakingTokenRoot,
+        address stakingNFTRoot,
+        address sendRemainingGasTo
+    ) public {
+        tvm.accept();
+        tvm.rawReserve(1 ever, 0); // we will always reserve 1 venom on this contract
+        _stakingTokenRoot = stakingTokenRoot;
+        _stakingNFTRoot = stakingNFTRoot;
+        totalStakedAmount = 0;
+        totalStakedNftCount = 0;
+        adminWallet = msg.sender;
+        ITokenRoot(stakingTokenRoot).deployWallet {
+            value: 0.2 ever,
+            flag: 1,
+            callback: Staking.onTokenWallet // this callback will be called by TokenRoot after deploying wallet for tokensale
+        } (
+            address(this),
+            0.1 ever
+        );
+        sendRemainingGasTo.transfer({ value: 0, flag: 128, bounce: false });
+    }
+    function onTokenWallet(address value) external {
+        require (
+            msg.sender.value != 0 &&
+            msg.sender == _stakingTokenRoot,
+            101
+        );
+        tvm.rawReserve(1 ever, 0);
+        _stakingTokenWallet = value; // store deployed tip3 wallet address
+        _owner.transfer({ value: 0, flag: 128, bounce: false }); // sending remaining gas after setups
+    }
+    function onAcceptTokensTransfer(
+        address, // tokenRoot,
+        uint128 amount,
+        address sender,
+        address, // senderWallet,
+        address remainingGasTo,
+        TvmCell payload
+    ) override external {
+        require(msg.sender==_stakingTokenWallet, 108);
+        tvm.rawReserve(0.2 ever, 0);
+        totalStakedAmount += amount;
+        if(stakes[sender].amount == 0) {
+            stakes[sender].firstStakedTime = now;
+            stakes[sender].timestamp = now;
+        }
+        stakes[sender].amount += amount;
+        forTest = msg.sender;
+        // remainingGasTo.transfer(0, false, 101);
+        emit TokenStake(sender, amount, stakes[sender].timestamp);
+    }
+
+    function onNftTransfer(
+        uint256 nftID, // id,
+        address oldOwner,
+        address, // newOwner,
+        address, // oldManager,
+        address, // newManager,
+        address collectionAddress, // collection,
+        address gasReceiver,
+        TvmCell // payload
+    ) override external {
+        // require(msg.sender==_stakingTokenWallet, 108);
+        // require(collectionAddress==_stakingNFTRoot, 109)
+        tvm.rawReserve(0.2 ever, 0);
+        stakes[oldOwner].nfts.push(msg.sender);
+        nftSender = oldOwner;
+        totalStakedNftCount++;
+        NftToStaker[msg.sender] = oldOwner;
+        emit NftStake(oldOwner, msg.sender, now);
+    }
+    
+    function getRewardAmount(address staker) external returns(uint128) {
+        uint128 duration = now - stakes[staker].timestamp;
+        uint128 apy = (uint128) (BASE_APY + 50 * stakes[staker].nfts.length);
+        uint128 reward = (stakes[staker].amount * apy) * duration / 100 / SECONDS_IN_YEAR;
+        return reward;
+    }
+
+    function claim() external {
+        require(stakes[msg.sender].amount > 0, 102);
+        tvm.rawReserve(1 ever, 0);
+        TvmCell payload;
+        uint128 duration = now - stakes[msg.sender].timestamp;
+        uint128 apy = (uint128) (BASE_APY + 50 * stakes[msg.sender].nfts.length);
+        uint128 reward = (stakes[msg.sender].amount * apy) * duration / 100 / SECONDS_IN_YEAR;
+
+        ITokenWallet(_stakingTokenWallet).transfer{ value: 0, flag: 128 }(reward, msg.sender, 0.1 ever, msg.sender, false, payload);
+        stakes[msg.sender].claimedAmount += reward;
+        stakes[msg.sender].timestamp = now; // reset the timestamp to now after claiming
+        emit TokenClaim(msg.sender, reward, stakes[msg.sender].timestamp);
+    }
+
+    function unstakable(address staker) external returns(bool) {
+        return (now >= stakes[staker].firstStakedTime + 7 days) && (stakes[staker].amount > 0);
+    }
+
+    function unstake(uint128 amount) external {
+        require(stakes[msg.sender].amount >= amount, 105);
+        require(stakes[msg.sender].firstStakedTime+7 days <= now, 103);
+        tvm.rawReserve(1 ever, 0);
+        TvmCell payload;
+        ITokenWallet(_stakingTokenWallet).transfer{ value: 0, flag: 128 }(amount, msg.sender, 0.1 ever, msg.sender, false, payload);
+        stakes[msg.sender].amount -= amount;
+        totalStakedAmount -= amount;
+        emit TokenUnstake(msg.sender, amount, now);
+    }
+
+    function withdraw(uint128 amount) external {
+        require(msg.sender==adminWallet, 110);
+        TvmCell payload;
+        ITokenWallet(_stakingTokenWallet).transfer{ value: 0, flag: 128 }(amount, msg.sender, 0.1 ever, msg.sender, false, payload);
+        emit TokenWithdraw(msg.sender, amount, now);
+    }
+
+    function unstakeNFT(address nftAddr) external {
+        require(NftToStaker[nftAddr] == msg.sender, 106);
+        tvm.rawReserve(0.2 ever, 0);
+        // stakes[msg.sender].nftIds
+        for(uint i=0; i<stakes[msg.sender].nfts.length;i++) {
+            if(stakes[msg.sender].nfts[i]==nftAddr) {
+                stakes[msg.sender].nfts[i] = stakes[msg.sender].nfts[stakes[msg.sender].nfts.length-1];
+                stakes[msg.sender].nfts.pop();
+            }
+        }
+
+        mapping(address => ITIP4_1NFT.CallbackParams) empty;
+        // just operating with interface
+        ITIP4_1NFT(nftAddr).transfer{
+            value: 0,
+            flag: 128,
+            bounce: false
+        }(
+            NftToStaker[nftAddr],
+            msg.sender,
+            empty
+        );
+
+        NftToStaker[nftAddr] = address(0);
+        emit NftUnstake(msg.sender, nftAddr, now);
+    }
+
+    function getAPY(address staker) external returns(uint128) {
+        return (uint128) (BASE_APY + 50 * stakes[staker].nfts.length);
+    }
+    
+    function getStakedInfo(address staker) external returns(Stake) {
+        return stakes[staker];
+    }
+}
